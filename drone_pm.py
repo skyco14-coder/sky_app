@@ -8,6 +8,7 @@
   - validation_monthly_hits.csv  [5] 검증 기간 월별 20대 적중 수
   - threshold_costs.csv          [6] 확률 기준별 비용(300/600만원)
   - test_predictions_2025.csv    [7] 제출용 시험 기간 예측
+  - this_month_predictions.csv   [8] 2026-01 정비 드론 전체(드론별 최근 기록) 확률
   - recheck_plan_2026_01.csv     [8] 2026-01 재점검 대상 20대
   - report.md                    보고서 초안(모든 숫자는 이 스크립트 실행 결과)
 """
@@ -485,6 +486,12 @@ def main():
     month["prob"] = final.predict_proba(month[FEATURES])[:, 1]
     latest = month.sort_values(["maintenance_date", "row_id"]).groupby("equipment_id").tail(1)
     latest = latest.sort_values("prob", ascending=False).reset_index(drop=True)
+    latest[["equipment_id", "equipment_type", "unit_code", "maintenance_date", "maintenance_type",
+            "fault_category", "prob"]].assign(
+        maintenance_date=latest.maintenance_date.dt.strftime("%Y-%m-%d"), prob=latest.prob.round(6),
+        flag_300=(latest.prob >= best300.threshold).astype(int),
+        flag_600=(latest.prob >= best600.threshold).astype(int)).to_csv(
+        OUT / "this_month_predictions.csv", index=False, encoding="utf-8-sig")
     over300 = int((latest.prob >= best300.threshold).sum())
     over600 = int((latest.prob >= best600.threshold).sum())
     top = latest.head(K).copy()
