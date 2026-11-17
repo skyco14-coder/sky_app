@@ -10,7 +10,8 @@
   - test_predictions_2025.csv    [7] 제출용 시험 기간 예측
   - this_month_predictions.csv   [8] 2026-01 정비 드론 전체(드론별 최근 기록) 확률
   - recheck_plan_2026_01.csv     [8] 2026-01 재점검 대상 20대
-  - report.md                    보고서 초안(모든 숫자는 이 스크립트 실행 결과)
+  - report.md                    제출물 (2) 분석 보고서 (모든 숫자는 이 스크립트 실행 결과)
+  - recheck_plan_2026_01.md      제출물 (3) 2026-01 재점검 계획 · 모델의 한계
 """
 from __future__ import annotations
 
@@ -635,7 +636,16 @@ def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model
     w("## 5. 시험 기간 예측 (outputs/test_predictions_2025.csv)\n")
     w(f"- 최종 모델은 학습 데이터 전체(2023-01~2024-12)로 다시 학습. 시험 {len(sub)}건 모두 예측.")
     w(f"- 확률 평균 {sub.prob.mean():.3f}, 기준({b300.threshold:.2f}) 이상 {int((sub.prob >= b300.threshold).sum())}건.\n")
-    w("## 6. 2026-01 드론 재점검 계획 (outputs/recheck_plan_2026_01.csv)\n")
+    w("---\n2026-01 드론 재점검 계획과 모델의 한계는 별도 문서 `outputs/recheck_plan_2026_01.md`에 있다.")
+    report_lines, L = L, []          # 여기부터는 재점검 계획 문서
+    w = L.append
+    w("# 2026-01 드론 재점검 계획\n")
+    w("> 모든 숫자는 `drone_pm.py` 실행 결과이며, 괄호 안에 출처 파일을 적었다. 교육용 가상 데이터. "
+      "데이터 처리 · 모델 · 기준을 정한 과정은 `outputs/report.md` 참고.\n")
+    w(f"- 사용 모델: {best_name} (2023-01~2024-12 학습)")
+    w(f"- 위험 표시 기준: 확률 {b300.threshold:.2f} 이상 (놓침 300만원 · 재점검 60만원 기준, 검증 기간에서 결정)")
+    w(f"- 점검 여력: 월 {K}대\n")
+    w("## 1. 재점검 대상 20대 (outputs/recheck_plan_2026_01.csv)\n")
     w(f"이번 달 정비한 드론 {len(latest)}대(드론별 최근 기록) 중 위험 표시 기준({b300.threshold:.2f}) 이상 "
       f"**{over300}대** (600만원 기준 {b600.threshold:.2f} 적용 시 {over600}대).\n")
     w("| 순위 | 드론 | 유형 | 부대 | 확률 | 위험을 올린 요인 | 권고 |\n|---|---|---|---|---|---|---|")
@@ -657,7 +667,7 @@ def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model
             "같은 부대 정비반 협조 가능 시 추가 점검.\n")
     else:
         w("기준 이상 드론이 20대 이하이므로 모두 이번 달에 재점검한다.\n")
-    w("## 7. 모델의 한계\n")
+    w("## 2. 모델의 한계\n")
     w("- 교육용 가상 데이터로 만든 모델이며, 확률은 과거 패턴에 근거한 추정치다.")
     w("- 비용 기준은 재점검하면 재고장을 막는다는 가정 위에서 계산했다.")
     w("- 위험 표시 기준은 검증 모델로 정했고 최종 모델은 더 많은 데이터로 다시 학습해 확률 분포가 조금 다를 수 있다.")
@@ -672,8 +682,10 @@ def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model
       "오래된 드론의 확률은 덜 정확할 수 있다.")
     w("- 요인 설명은 상관관계이며 고장 원인을 뜻하지 않는다.")
     w("- **최종 재점검 여부는 정비 담당자가 현장 상태·임무 일정을 함께 보고 판단한다.**")
-    (OUT / "report.md").write_text("\n".join(L), encoding="utf-8")
-    print("\n보고서 초안 -> outputs/report.md")
+    (OUT / "report.md").write_text("\n".join(report_lines), encoding="utf-8")
+    (OUT / "recheck_plan_2026_01.md").write_text("\n".join(L), encoding="utf-8")
+    print("\n분석 보고서 -> outputs/report.md")
+    print("재점검 계획 -> outputs/recheck_plan_2026_01.md")
 
 
 if __name__ == "__main__":

@@ -280,8 +280,17 @@ def v8_report(thr, over):
         row = re.search(rf"\| {miss}만원 \| ([\d.]+) \|", rep)
         check(f"보고서 기준({miss}만원)", bool(row) and float(row.group(1)) == thr[miss],
               row.group(0) if row else "못 찾음")
-    m = re.search(r"이상 \*\*(\d+)대\*\*", rep)
-    check("보고서 기준 이상 드론 수", bool(m) and int(m.group(1)) == over, m.group(0) if m else "못 찾음")
+    check("분석 보고서에 재점검 계획 문서 안내가 있음", "outputs/recheck_plan_2026_01.md" in rep)
+
+    say("\n[V9] 재점검 계획 문서 대조 (recheck_plan_2026_01.md ↔ outputs/*.csv)")
+    path = OUT / "recheck_plan_2026_01.md"
+    check("재점검 계획 문서가 있음", path.exists())
+    rep = path.read_text(encoding="utf-8") if path.exists() else ""
+    for need in ["## 1. 재점검 대상 20대", "## 2. 모델의 한계", "처리 방안", "정비 담당자"]:
+        check(f"계획 문서에 '{need}'", need in rep)
+    m = re.search(r"기준\(([\d.]+)\) 이상 \*\*(\d+)대\*\*", rep)
+    check("계획 문서 기준 이상 드론 수", bool(m) and int(m.group(2)) == over and float(m.group(1)) == thr[300],
+          m.group(0) if m else "못 찾음")
     mp = read(OUT / "this_month_predictions.csv")
     a, b = mp.iloc[19], mp.iloc[20]
     m = re.search(r"20위 (DR-\d+).*? 확률 ([\d.]+), 21위 (DR-\d+).*? 확률 ([\d.]+)\. 차이 ([\d.]+)", rep)
@@ -293,7 +302,7 @@ def v8_report(thr, over):
     else:
         check("20위 경계 차이가 커서 문구 없음", m is None, f"차이 {a.prob - b.prob:.4f}")
     plan = read(OUT / "recheck_plan_2026_01.csv")
-    check("보고서 재점검 표 20대가 계획 파일과 같음",
+    check("계획 문서 재점검 표 20대가 계획 CSV와 같음",
           all(f"| {r['순위']} | {r['드론']} |" in rep for _, r in plan.iterrows()))
 
 
