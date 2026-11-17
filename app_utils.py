@@ -24,19 +24,25 @@ DATA_FILES = {
 }
 
 
+# 캐시는 파일 이름 + 수정 시각으로 구분한다. 이름만 쓰면 결과 파일이 바뀌어도(새로 푸시해도)
+# 앱이 다시 시작될 때까지 예전 값을 계속 보여 준다.
 @st.cache_data
+def _read_csv(path: str, mtime: float, **kw) -> pd.DataFrame:
+    return pd.read_csv(path, encoding="utf-8-sig", **kw)
+
+
 def read_data(name: str) -> pd.DataFrame:
     """data/ 폴더의 원본 CSV"""
-    return pd.read_csv(DATA / name, encoding="utf-8-sig", parse_dates=["maintenance_date"])
+    path = DATA / name
+    return _read_csv(str(path), path.stat().st_mtime, parse_dates=["maintenance_date"])
 
 
-@st.cache_data
 def read_output(name: str) -> pd.DataFrame | None:
     """outputs/ 폴더의 결과 CSV. 없으면 None (drone_pm.py를 먼저 실행해야 함)"""
     path = OUT / name
     if not path.exists():
         return None
-    return pd.read_csv(path, encoding="utf-8-sig")
+    return _read_csv(str(path), path.stat().st_mtime)
 
 
 def require_output(name: str) -> pd.DataFrame:
