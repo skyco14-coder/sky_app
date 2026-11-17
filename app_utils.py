@@ -53,6 +53,23 @@ def best_threshold(costs: pd.DataFrame, cost_col: str) -> pd.Series:
     return costs.sort_values([cost_col, "threshold"], ascending=[True, False]).iloc[0]
 
 
+# 차트 색: 팔레트 고정 순서(1 파랑, 2 주황) + 기준선은 회색
+C_MAIN = "#2a78d6"      # 선택 모델 / 단일 계열
+C_COMPARE = "#eb6834"   # 비교 대상(경과연수순, 600만원 등)
+C_BASE = "#9a9893"      # 기준선 · 참고선
+
+
+def read_text(name: str) -> str | None:
+    path = OUT / name
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def best_model(metrics: pd.DataFrame) -> pd.Series:
+    """validation_metrics.csv에서 선택 모델(기준선 제외, PR-AUC 최고) — drone_pm.py와 같은 규칙"""
+    models = metrics[~metrics.model.str.startswith("기준선")]
+    return models.sort_values(["PR_AUC", "top20_hits_total"], ascending=False).iloc[0]
+
+
 def coming_soon(step: str, items: list[str]):
     """뼈대 페이지용 '준비 중' 안내"""
     st.info(f"README {step} 내용을 담을 페이지입니다. 아직 준비 중입니다.")
