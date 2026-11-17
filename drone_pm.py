@@ -27,7 +27,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):      # 주피터 등에서는 없음
+    sys.stdout.reconfigure(encoding="utf-8")
 
 SEED = 42
 DATA = Path(__file__).parent / "data"
@@ -258,12 +259,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         df[k] = v
     df["prev_maintenance_type"] = prev_type
 
-    # 첫 기록 / 예방정비 이력 없음 -> 표시 + 대체(학습 데이터 중앙값)
-    df["is_first_record"] = df.days_since_last_maintenance.isna().astype(int)
-    tr = df.split == "train"
-    for c in ["days_since_last_maintenance", "hours_per_day_recent",
-              "days_since_last_pm", "hours_since_last_pm"]:
-        df[c] = df[c].fillna(df.loc[tr, c].median())
+    # 직전 정비 없음(드론별 첫 기록) / 예방정비 이력 없음 -> 이유가 있는 결측.
+    # 0('방금 정비함')이나 중앙값('51일 전 정비')으로 채우면 없는 사실이 생기므로 비워 두고 표시만 한다.
+    # (트리 모델은 빈 값을 그대로 학습, 로지스틱회귀만 모델 안에서 학습 데이터 중앙값으로 채움)
+    df["is_first_maintenance"] = df.days_since_last_maintenance.isna().astype(int)
 
     m = df.maintenance_date.dt.month
     df["month_sin"] = np.sin(2 * np.pi * m / 12)
@@ -280,7 +279,7 @@ NUM_FEATURES = [
     "equipment_age_years", "severity", "downtime_hours", "repair_duration_hours",
     "parts_replaced_count", "maintenance_cost", "maintenance_success",
     "cumulative_operating_hours", "days_since_last_maintenance",
-    "downtime_missing", "is_first_record", "is_failure",
+    "downtime_missing", "is_first_maintenance", "is_failure",
     "fail_cnt_30d", "fail_cnt_90d", "fail_cnt_180d", "fail_cnt_365d", "maint_cnt_90d",
     "same_cat_fail_365d", "unsuccess_cnt_180d", "severity_sum_180d",
     "days_since_prev_failure", "days_since_last_pm", "hours_since_last_pm",
@@ -305,7 +304,7 @@ FEATURE_KO = {
     "repair_duration_hours": "수리 시간", "parts_replaced_count": "교체 부품 수",
     "maintenance_cost": "정비 비용", "maintenance_success": "정비 성공 여부",
     "cumulative_operating_hours": "누적 비행시간", "days_since_last_maintenance": "직전 정비 뒤 경과일",
-    "downtime_missing": "운용중단 시간 모름", "is_first_record": "첫 정비 기록",
+    "downtime_missing": "운용중단 시간 모름", "is_first_maintenance": "첫 정비 기록",
     "is_failure": "이번 정비가 고장정비", "fail_cnt_30d": "최근 30일 고장 수",
     "fail_cnt_90d": "최근 90일 고장 수", "fail_cnt_180d": "최근 180일 고장 수",
     "fail_cnt_365d": "최근 1년 고장 수", "maint_cnt_90d": "최근 90일 정비 횟수",
@@ -402,7 +401,7 @@ def explain_rows(model, X: pd.DataFrame, ref: pd.DataFrame, top_n=3):
     groups = {c: [c] for c in FEATURES if c not in ("month_sin", "month_cos")}
     groups["month"] = ["month_sin", "month_cos"]
     ref_vals = {c: (ref[c].mode()[0] if c in CAT_FEATURES or c in
-                    ("is_failure", "maintenance_success", "downtime_missing", "is_first_record")
+                    ("is_failure", "maintenance_success", "downtime_missing", "is_first_maintenance")
                     else ref[c].median()) for c in FEATURES}
     ref_vals["month_sin"], ref_vals["month_cos"] = 0.0, 0.0   # 계절 효과 제거
     deltas = {}
@@ -582,7 +581,14 @@ def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model
       "나머지 중 100의 배수는 100·200·300뿐. ÷100 하면 150~190으로 사후정비 정상 범위이며 수리시간·부품 수로 본 예상 비용과 맞음 "
       f"| ÷100, `cost_fixed` 표시 | {n.get('maintenance_cost', 0)} |")
     w("| fault_code·fault_category 결측 | 모두 예방정비 → 고장이 없어 원래 값 없음 | '없음' 범주 | 학습 1,707 / 시험 876 / 이번 달 62 |")
-    w("| days_since_last_maintenance 결측 | 드론별 첫 기록 → 직전 정비 없음 | `is_first_record` 표시 + 학습 중앙값 | 150 |")
+    n_first = int(df.is_first_maintenance.sum())
+    n_nopm = int(df.days_since_last_pm.isna().sum())
+    w(f"| days_since_last_maintenance 결측 (+ 여기서 계산하는 hours_per_day_recent) | 드론별 첫 기록 → 직전 정비 없음 (이유가 있는 결측) "
+      f"| 비워 두고 `is_first_maintenance = 1` 표시. 0으로 채우지 않음(0은 '방금 정비함'), 중앙값으로 채우지 않음('51일 전 정비'가 됨) | {n_first} |")
+    w(f"| days_since_last_pm · hours_since_last_pm 결측 | 예방정비 이력 없음 (이유가 있는 결측) | 비워 둠. 0으로 채우지 않음 | {n_nopm} |")
+    w("\n빈 값은 트리 모델(랜덤포레스트 · 그래디언트부스팅)이 그대로 학습한다. 빈 값을 다루지 못하는 로지스틱회귀만 "
+      "모델 안에서 학습 데이터 중앙값으로 채운다(검증 · 시험 값은 쓰지 않음). 직전 정비 없는 기록은 학습 데이터(2023-01~03)에만 있고 "
+      "시험 · 이번 달에는 없다.\n")
     w("| availability_rate ≤ 0.3 | 정비 뒤 고장이 반영된 값(재고장률 100%) | 컬럼 자체를 제외 | - |")
     w("\n**삭제한 행은 없다.** 이상치는 값만 고치고 표시 컬럼으로 남겨 추적할 수 있게 했다.\n")
     tr_all = df[df.split == "train"]

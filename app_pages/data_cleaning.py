@@ -18,7 +18,9 @@ rules = pd.DataFrame([
      "÷100 (150~190, 사후정비 정상 범위) + `cost_fixed` 표시"),
     ("반복 고장 드론 (DR-0034, DR-0115)", "입력 오류 아님 (날짜 · 비행시간 일관)", "지우지 않음. PR-AUC를 이 드론 빼고도 따로 계산"),
     ("fault_code · fault_category 결측", "원래 값 없음 (모두 예방정비)", "'없음' 범주"),
-    ("days_since_last_maintenance 결측", "원래 값 없음 (드론별 첫 기록)", "`is_first_record` 표시 + 학습 데이터 중앙값"),
+    ("days_since_last_maintenance 결측 (+ 최근 하루 비행시간)", "직전 정비 없음 (드론별 첫 기록, 이유가 있는 결측)",
+     "비워 두고 `is_first_maintenance = 1` 표시. 0('방금 정비함') · 중앙값('51일 전 정비')으로 채우지 않음"),
+    ("예방정비 뒤 경과일 · 비행시간 결측", "예방정비 이력 없음 (이유가 있는 결측)", "비워 둠. 0으로 채우지 않음"),
     ("availability_rate", "정비 뒤 정보가 섞인 값 (누수)", "컬럼 자체를 모델에서 제외"),
 ], columns=["대상", "판단", "처리"])
 st.dataframe(rules, hide_index=True, width="stretch")

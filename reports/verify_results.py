@@ -116,7 +116,7 @@ def v4_leakage(df_full: pd.DataFrame, n_sample=40, seed=0):
         g = full.loc[rid, hist_cols]
         for c in hist_cols:
             a, b = f[c], g[c]
-            same = (a == b) if isinstance(a, str) else np.isclose(float(a), float(b))
+            same = (a == b) if isinstance(a, str) else np.isclose(float(a), float(b), equal_nan=True)
             if not same:
                 bad.append((rid, c, a, b))
     check("이력 피처가 미래 기록 없이도 똑같이 계산됨", not bad,
@@ -141,6 +141,16 @@ def v4_leakage(df_full: pd.DataFrame, n_sample=40, seed=0):
     check("정상 최댓값과 오입력 최솟값 사이에 값 없음",
           int(cost.between(normal.maintenance_cost.max() + 1, cost[rule].min() - 1).sum()) == 0,
           f"{normal.maintenance_cost.max()} ~ {cost[rule].min()}")
+    # 직전 정비 없음 / 예방정비 이력 없음 -> 비워 두고 표시 (0 · 중앙값으로 채우지 않음)
+    first = full.is_first_maintenance == 1
+    check("직전 정비 없는 기록은 경과일 · 하루 비행시간이 빈 값 + is_first_maintenance=1",
+          full.loc[first, ["days_since_last_maintenance", "hours_per_day_recent"]].isna().all().all()
+          and (raw.set_index("row_id").days_since_last_maintenance.isna() == first).all(),
+          f"{int(first.sum())}건, 분할별 {full[first].split.value_counts().to_dict()}")
+    check("직전 정비 있는 기록은 빈 값 없음",
+          full.loc[~first, ["days_since_last_maintenance", "hours_per_day_recent"]].notna().all().all())
+    check("0으로 채운 값 없음 (경과일 최솟값 > 0)", full.days_since_last_maintenance.min() > 0,
+          f"최솟값 {full.days_since_last_maintenance.min()}")
     raw999 = raw.set_index("row_id").downtime_hours >= 999
     after = full.loc[raw999[raw999].index]
     check("downtime_hours 999는 '모름'(빈 값)으로 남고 표시됨",
