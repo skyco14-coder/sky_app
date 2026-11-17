@@ -13,10 +13,12 @@ st.markdown(
     "정비를 마친 드론 가운데 **30일 안에 다시 고장 날 드론**을 미리 골라, "
     f"**이번 달(2026-01) 재점검할 드론 {MONTHLY_CAPACITY}대**를 정한다."
 )
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.markdown("**사용자**  \n드론 정비반장")
-c2.markdown("**예측 대상**  \n`failure_within_30days`  \n정비 뒤 30일 안에 사후 · 긴급정비가 있으면 1")
+c2.markdown("**예측 대상**  \n`failure_within_30days`  \n정비 1건마다 30일 안 재고장 확률을 예측  \n"
+            "(30일 안에 사후 · 긴급정비가 있으면 1)")
 c3.markdown("**예측 시점**  \n정비를 마친 직후")
+c4.markdown(f"**결정**  \n드론별 이번 달 최근 정비의 확률로 재점검 {MONTHLY_CAPACITY}대 선정")
 
 st.subheader("업무 조건")
 k1, k2, k3 = st.columns(3)

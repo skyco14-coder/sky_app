@@ -207,6 +207,29 @@ def v5_validation(df: pd.DataFrame):
           f"{repeat}, {pr_ex:.4f} (파일 {metrics.at[best, 'PR_AUC_excl_repeat']})")
     base_ex = metrics.loc[metrics.index.str.startswith("기준선"), "PR_AUC_excl_repeat"].max()
     check("반복 고장 드론을 빼도 기준선보다 높음", pr_ex > base_ex, f"{pr_ex:.3f} > {base_ex:.3f}")
+
+    # 불확실성 (validation_uncertainty.csv): 같은 방식으로 다시 계산
+    unc = read(OUT / "validation_uncertainty.csv").set_index("항목")
+    yv = val[TARGET].values
+    rng = np.random.default_rng(pm.SEED)
+    idx = [rng.integers(0, len(yv), len(yv)) for _ in range(1000)]
+    pb = np.array([average_precision_score(yv[i], preds[best][i]) for i in idx])
+    pa = np.array([average_precision_score(yv[i], val.equipment_age_years.values[i]) for i in idx])
+    row = unc.loc[f"{best} PR-AUC 95% 구간 (부트스트랩 1000회)"]
+    check("부트스트랩 95% 구간 재현", abs(np.percentile(pb, 2.5) - row.하한) < 1e-3 and abs(np.percentile(pb, 97.5) - row.상한) < 1e-3,
+          f"{np.percentile(pb, 2.5):.3f} ~ {np.percentile(pb, 97.5):.3f}")
+    d = unc.loc[f"PR-AUC 차이 ({best} - 경과연수순) 95% 구간"]
+    check("모델 - 경과연수순 차이 구간이 0보다 큼 (차이가 우연이 아님)",
+          d.하한 > 0 and abs(np.percentile(pb - pa, 2.5) - d.하한) < 1e-3, f"{d.하한:.3f} ~ {d.상한:.3f}")
+    s = unc.loc[f"{best} PR-AUC 랜덤 시드 0~4"]
+    check("시드 흔들림이 PR-AUC 구간 안에 있음", row.하한 <= s.하한 and s.상한 <= row.상한, f"{s.하한:.4f} ~ {s.상한:.4f}")
+
+    # 월별 가능한 최대 적중
+    mh = read(OUT / "validation_monthly_hits.csv", index_col=0)
+    _, lat = monthly_hits(val, np.zeros(len(val)))
+    ceil = {str(m): int(min(20, g[TARGET].sum())) for m, g in lat.groupby("ym")}
+    check("월별 가능한 최대 적중 재현", all(mh.at[m, "가능한_최대"] == c for m, c in ceil.items()), str(ceil))
+    check("모든 달 적중 ≤ 가능한 최대", (mh[best] <= mh["가능한_최대"]).all())
     check("선택 모델이 검증 PR-AUC 최고", best == "랜덤포레스트", best)
     check("선택 모델이 두 기준선보다 PR-AUC·적중 모두 높음",
           all(models.loc[best, c] > metrics.loc[metrics.index.str.startswith("기준선"), c].max()
@@ -256,6 +279,10 @@ def v7_final(df, best_name, thr):
     check("재점검 20대 = 드론별 최근 기록의 확률 상위 20대",
           latest.equipment_id.head(20).tolist() == plan["드론"].tolist())
     check("재점검 20대 중복 드론 없음", plan["드론"].nunique() == 20)
+    check("20대 모두 위험 요인 · 권고가 있음", plan["위험을 올린 요인"].notna().all() and plan["권고"].notna().all()
+          and (plan["권고"].str.len() > 0).all())
+    check("권고에 고장 유형별 점검이 들어 있음",
+          all(any(v in r for v in pm.RECOMMEND.values()) for r in plan["권고"]))
     repeat = pm.repeat_failure_drones(train)
     rep_rows = plan[plan["드론"].isin(repeat)]
     check("반복 고장 드론 권고에 근본 원인 조사 문구", rep_rows["권고"].str.startswith("반복 고장 기체").all()
@@ -281,6 +308,20 @@ def v8_report(thr, over):
         check(f"보고서 기준({miss}만원)", bool(row) and float(row.group(1)) == thr[miss],
               row.group(0) if row else "못 찾음")
     check("분석 보고서에 재점검 계획 문서 안내가 있음", "outputs/recheck_plan_2026_01.md" in rep)
+    heads = ["## 요약", "## 용어", "## 1. 데이터 살펴보기", "## 2. 데이터 처리", "## 3. 피처 만들기",
+             "## 4. 쓸 컬럼 고르기", "## 5. 기간 분할과 성능", "## 6. 위험 표시 기준", "## 7. 시험 기간 예측"]
+    missing = [h for h in heads if h not in rep]
+    check("보고서가 README 단계 순서대로 구성됨", not missing, f"없음: {missing}" if missing else "요약 · 용어 · 1~7장")
+    for miss in (300, 600):
+        row = re.search(rf"\| {miss}만원 \| [\d.]+ \| \d+ \| \d+ \| \d+ \| [\d,]+ \| ([\d.]+) \|", rep)
+        check(f"보고서 이론 기준값({miss}만원) = 60/{miss}", bool(row) and abs(float(row.group(1)) - 60 / miss) < 1e-9)
+    plan_md = (OUT / "recheck_plan_2026_01.md").read_text(encoding="utf-8")
+    for label, text in (("보고서", rep), ("계획 문서", plan_md)):
+        blocks = [b.strip("\n").split("\n") for b in re.findall(r"(?:^\|.*(?:\n|$))+", text, re.M)]
+        broken = [b[0][:40] for b in blocks if len(b) < 2 or not b[1].startswith("|---")]
+        check(f"{label} 표가 깨지지 않음 (표마다 머리줄 + 구분선)", not broken, f"표 {len(blocks)}개" + (f", 깨짐 {broken}" if broken else ""))
+    u = read(OUT / "validation_uncertainty.csv").iloc[0]
+    check("보고서 요약의 PR-AUC 95% 구간 = 불확실성 파일", f"{u.하한:.3f}~{u.상한:.3f}" in rep)
 
     say("\n[V9] 재점검 계획 문서 대조 (recheck_plan_2026_01.md ↔ outputs/*.csv)")
     path = OUT / "recheck_plan_2026_01.md"

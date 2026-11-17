@@ -2,8 +2,10 @@
 import pandas as pd
 import streamlit as st
 
-from app_utils import require_output
-from drone_pm import CAT_FEATURES, EXCLUDED, FEATURE_KO, NUM_FEATURES
+from app_utils import read_data, require_output
+from drone_pm import CAT_FEATURES, EXCLUDED, FEATURE_KO, NUM_FEATURES, repeat_failure_drones
+
+REPEAT = ", ".join(repeat_failure_drones(read_data("drone_train.csv")))
 
 st.title("데이터 처리 · 컬럼 선택")
 st.caption("README [2]~[4] · 기준은 drone_pm.py의 clean() · build_features(), 처리 내역은 outputs/cleaning_log.csv")
@@ -16,7 +18,7 @@ rules = pd.DataFrame([
      "값을 지어내지 않고 '모름'(빈 값)으로 둠 + `downtime_missing` 표시. 로지스틱회귀만 모델 안에서 학습 데이터 중앙값으로 채움"),
     ("maintenance_cost ≥ 10,000이면서 100의 배수", "100배 단위 오입력 (정상 최댓값 611과 15,000 사이 값 없음)",
      "÷100 (150~190, 사후정비 정상 범위) + `cost_fixed` 표시"),
-    ("반복 고장 드론 (DR-0034, DR-0115)", "입력 오류 아님 (날짜 · 비행시간 일관)", "지우지 않음. PR-AUC를 이 드론 빼고도 따로 계산"),
+    (f"반복 고장 드론 ({REPEAT})","입력 오류 아님 (날짜 · 비행시간 일관)", "지우지 않음. PR-AUC를 이 드론 빼고도 따로 계산"),
     ("fault_code · fault_category 결측", "원래 값 없음 (모두 예방정비)", "'없음' 범주"),
     ("days_since_last_maintenance 결측 (+ 최근 하루 비행시간)", "직전 정비 없음 (드론별 첫 기록, 이유가 있는 결측)",
      "비워 두고 `is_first_maintenance = 1` 표시. 0('방금 정비함') · 중앙값('51일 전 정비')으로 채우지 않음"),

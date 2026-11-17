@@ -291,7 +291,7 @@ NUM_FEATURES = [
 FEATURES = CAT_FEATURES + NUM_FEATURES
 
 EXCLUDED = {
-    "availability_rate": "'그 달' 가동률이라 정비 뒤 같은 달의 고장·중단이 섞임(<=0.3이면 재고장률 100%). "
+    "availability_rate": "'그 달' 가동률이라 정비 뒤 같은 달의 고장·중단이 섞임(1장: 0.3 이하이면 재고장률이 매우 높음). "
                          "정비 직후에는 알 수 없고 이번 달 파일에도 없음",
     "failure_within_30days": "예측 대상(정답)",
     "fault_code": "약 40종으로 잘게 나뉘어 학습 건수가 적음. 같은 정보를 fault_category로 사용",
@@ -317,6 +317,27 @@ FEATURE_KO = {
     "n_prior_records": "과거 정비 기록 수", "hours_per_day_recent": "최근 하루 비행시간",
     "month": "정비 월(계절)",
 }
+
+# 새로 만든 피처: (컬럼, 뜻, 왜 넣었나) — 보고서 3장 표
+FEATURE_DOC = [
+    ("fail_cnt_30d", "이번 정비 포함 최근 30일 사후 · 긴급정비 수", "고장이 몰려 있으면 곧 또 고장 날 가능성이 큼 (README 예시: 최근 기간 고장 수)"),
+    ("fail_cnt_90d", "최근 90일 고장 수", "30일보다 긴 흐름"),
+    ("fail_cnt_180d", "최근 180일 고장 수", "반기 흐름"),
+    ("fail_cnt_365d", "최근 1년 고장 수", "기체의 장기 고장 성향"),
+    ("maint_cnt_90d", "최근 90일 정비 횟수(종류 무관)", "정비가 잦은 기체"),
+    ("same_cat_fail_365d", "이번 고장과 같은 유형의 1년 내 고장 수", "같은 계통 반복 고장 = 근본 원인 미해결 신호"),
+    ("unsuccess_cnt_180d", "최근 180일 정비 실패 수", "정비가 잘 안 된 기체"),
+    ("severity_sum_180d", "최근 180일 고장 심각도 합", "고장 건수에 심각도를 더한 부담"),
+    ("days_since_prev_failure", "직전 고장(이번 제외) 뒤 경과일, 고장 이력 없으면 730",
+     "고장 간격이 짧을수록 위험 (README 예시: 직전 고장 뒤 경과일)"),
+    ("days_since_last_pm", "마지막 예방정비 뒤 경과일", "예방정비 주기가 밀리면 위험"),
+    ("hours_since_last_pm", "마지막 예방정비 뒤 비행시간", "README 예시: 예방정비 뒤 비행시간"),
+    ("n_prior_records", "과거 정비 기록 수", "기체의 누적 정비 이력"),
+    ("hours_per_day_recent", "직전 정비 뒤 하루 평균 비행시간", "많이 쓰는 기체는 빨리 닳음"),
+    ("prev_maintenance_type", "직전 정비 구분", "고장정비가 연속되는지"),
+    ("is_failure", "이번 정비가 사후 · 긴급정비인지", "고장정비 뒤 재고장률이 높음 (1장)"),
+    ("month_sin", "정비 월(계절) — sin · cos 두 개로 표현", "계절별 재고장률 차이 (1장). 12월과 1월이 가깝게 표현됨"),
+]
 
 
 # ----------------------------------------------------------------------------
@@ -434,6 +455,17 @@ def explain_rows(model, X: pd.DataFrame, ref: pd.DataFrame, top_n=3):
     return texts, deltas
 
 
+# 가장 크게 위험을 올린 요인 -> 그 요인에 맞는 조치 (권고 앞부분)
+FACTOR_ACTION = {
+    ("fail_cnt_30d", "fail_cnt_90d", "fail_cnt_180d", "fail_cnt_365d", "severity_sum_180d",
+     "days_since_prev_failure", "same_cat_fail_365d", "is_failure", "prev_maintenance_type",
+     "maint_cnt_90d", "days_since_last_maintenance"): "[최근 고장 반복] 직전 고장 계통의 수리 품질 재확인.",
+    ("days_since_last_pm", "hours_since_last_pm"): "[예방정비 주기 경과] 예방정비를 앞당김.",
+    ("cumulative_operating_hours", "equipment_age_years", "n_prior_records"): "[노후 기체] 수명 부품 교체 검토.",
+    ("maintenance_success", "unsuccess_cnt_180d"): "[정비 실패 이력] 재정비 후 확인 비행.",
+    ("hours_per_day_recent",): "[운용 강도 높음] 비행 일정 조정 검토.",
+}
+
 RECOMMEND = {
     "배터리": "배터리 셀 전압·내부저항 측정, 충전기 점검, 필요 시 배터리팩 교체",
     "모터": "모터·ESC 진동·발열 점검, 베어링 상태 확인, 프로펠러 균형 점검",
@@ -497,12 +529,44 @@ def main():
 
     metrics = pd.DataFrame(results)
     metrics.to_csv(OUT / "validation_metrics.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame(monthly).to_csv(OUT / "validation_monthly_hits.csv", encoding="utf-8-sig")
     print(metrics.to_string(index=False))
 
     model_rows = metrics[~metrics.model.str.startswith("기준선")]
     best_name = model_rows.sort_values(["PR_AUC", "top20_hits_total"], ascending=False).iloc[0]["model"]
     print(f"-> 검증 PR-AUC 최고 모델: {best_name}")
+
+    # 성능 불확실성: 검증 표본을 다시 뽑았을 때(부트스트랩 1000회) + 랜덤 시드만 바꿨을 때
+    yv = val[TARGET].values
+    rng_b = np.random.default_rng(SEED)
+    boot_idx = [rng_b.integers(0, len(yv), len(yv)) for _ in range(1000)]
+    p_best, p_age = preds_val[best_name], val.equipment_age_years.values
+    pr_best = np.array([average_precision_score(yv[i], p_best[i]) for i in boot_idx])
+    pr_age = np.array([average_precision_score(yv[i], p_age[i]) for i in boot_idx])
+    seed_pr = []
+    for s in range(5):
+        m = make_models()[best_name]
+        if "random_state" in m.named_steps["clf"].get_params():
+            m.set_params(clf__random_state=s)
+        m.fit(fit[FEATURES], fit[TARGET])
+        seed_pr.append(average_precision_score(yv, m.predict_proba(val[FEATURES])[:, 1]))
+    unc = pd.DataFrame([
+        {"항목": f"{best_name} PR-AUC 95% 구간 (부트스트랩 1000회)",
+         "하한": np.percentile(pr_best, 2.5), "상한": np.percentile(pr_best, 97.5), "표준오차_또는_폭": pr_best.std()},
+        {"항목": "경과연수순 PR-AUC 95% 구간 (부트스트랩 1000회)",
+         "하한": np.percentile(pr_age, 2.5), "상한": np.percentile(pr_age, 97.5), "표준오차_또는_폭": pr_age.std()},
+        {"항목": f"PR-AUC 차이 ({best_name} - 경과연수순) 95% 구간",
+         "하한": np.percentile(pr_best - pr_age, 2.5), "상한": np.percentile(pr_best - pr_age, 97.5),
+         "표준오차_또는_폭": (pr_best - pr_age).std()},
+        {"항목": f"{best_name} PR-AUC 랜덤 시드 0~4", "하한": min(seed_pr), "상한": max(seed_pr),
+         "표준오차_또는_폭": max(seed_pr) - min(seed_pr)},
+    ]).round(4)
+    unc.to_csv(OUT / "validation_uncertainty.csv", index=False, encoding="utf-8-sig")
+
+    # 월별로 가능한 최대 적중(그 달 실제 재고장 드론 수, 최대 20)
+    lv = latest_per_drone_month(val)
+    ceiling = {str(ym): int(min(K, g[TARGET].sum())) for ym, g in lv.groupby("ym")}
+    pd.DataFrame({**monthly, "가능한_최대": ceiling}).to_csv(
+        OUT / "validation_monthly_hits.csv", encoding="utf-8-sig")
 
     # [6] 위험 표시 기준 (검증 기간 예측으로만 결정)
     p_val, y_val = preds_val[best_name], val[TARGET].values
@@ -544,9 +608,12 @@ def main():
     over300 = int((latest.prob >= best300.threshold).sum())
     over600 = int((latest.prob >= best600.threshold).sum())
     top = latest.head(K).copy()
-    reasons, _ = explain_rows(final, top[FEATURES], train[FEATURES])
+    reasons, deltas = explain_rows(final, top[FEATURES], train[FEATURES])
     top["위험을 올린 요인"] = reasons
-    top["권고"] = top.fault_category.map(RECOMMEND)
+    # 권고 = (가장 크게 위험을 올린 요인에 맞는 조치) + (이번 고장 유형별 점검)
+    top_factor = deltas.idxmax(axis=1)
+    action = top_factor.map(lambda g: next((v for k, v in FACTOR_ACTION.items() if g in k), ""))
+    top["권고"] = [f"{a} " if a else "" for a in action] + top.fault_category.map(RECOMMEND)
     rep = top.equipment_id.isin(REPEAT_DRONES)
     top.loc[rep, "권고"] = "반복 고장 기체: 근본 원인 조사 · 운용 중지 검토. " + top.loc[rep, "권고"]
     plan = pd.DataFrame({
@@ -562,11 +629,11 @@ def main():
     print(plan[["순위", "드론", "유형", "부대", "확률", "위험을 올린 요인"]].to_string(index=False))
 
     write_report(df, fit, val, metrics, monthly, best_name, best300, best600, no_model_cost,
-                 all_check_cost, sub, latest, plan, overflow, over300, over600)
+                 all_check_cost, sub, latest, plan, overflow, over300, over600, unc, ceiling, train)
 
 
 def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model_cost, all_check_cost,
-                 sub, latest, plan, overflow, over300, over600):
+                 sub, latest, plan, overflow, over300, over600, unc, ceiling, train):
     cl = pd.read_csv(OUT / "cleaning_log.csv", encoding="utf-8-sig")
     best = metrics[metrics.model == best_name].iloc[0]
     rnd = metrics[metrics.model.str.contains("무작위")].iloc[0]
@@ -574,68 +641,193 @@ def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model
     mh = pd.DataFrame(monthly)[[best_name, "기준선_경과연수순"]]
     L = []
     w = L.append
-    w("# 드론 예측정비 분석 보고서\n")
-    w("> 모든 숫자는 `drone_pm.py` 실행 결과이며, 괄호 안에 출처 파일을 적었다. 교육용 가상 데이터.\n")
-    w("## 1. 데이터 처리 기준과 근거 (outputs/eda_summary.txt, outputs/cleaning_log.csv)\n")
-    w("| 대상 | 판단 | 처리 | 건수 |\n|---|---|---|---|")
-    n = cl.groupby("column").size().to_dict()
-    w(f"| downtime_hours = 999 | 다른 최댓값과 동떨어진 결측 코드(입력 실수) | 값을 지어내지 않고 '모름'(빈 값)으로 둠, `downtime_missing` 표시. 로지스틱회귀만 모델 안에서 학습 데이터 중앙값으로 채움(트리 모델은 빈 값 그대로 학습) | {n.get('downtime_hours', 0)} |")
-    w(f"| maintenance_cost ≥ 10,000이면서 100의 배수 | 100배 단위 오입력. 정상 최댓값 611과 15,000 사이에 값이 없고, "
-      "나머지 중 100의 배수는 100·200·300뿐. ÷100 하면 150~190으로 사후정비 정상 범위이며 수리시간·부품 수로 본 예상 비용과 맞음 "
-      f"| ÷100, `cost_fixed` 표시 | {n.get('maintenance_cost', 0)} |")
-    w("| fault_code·fault_category 결측 | 모두 예방정비 → 고장이 없어 원래 값 없음 | '없음' 범주 | 학습 1,707 / 시험 876 / 이번 달 62 |")
-    n_first = int(df.is_first_maintenance.sum())
-    n_nopm = int(df.days_since_last_pm.isna().sum())
-    w(f"| days_since_last_maintenance 결측 (+ 여기서 계산하는 hours_per_day_recent) | 드론별 첫 기록 → 직전 정비 없음 (이유가 있는 결측) "
-      f"| 비워 두고 `is_first_maintenance = 1` 표시. 0으로 채우지 않음(0은 '방금 정비함'), 중앙값으로 채우지 않음('51일 전 정비'가 됨) | {n_first} |")
-    w(f"| days_since_last_pm · hours_since_last_pm 결측 | 예방정비 이력 없음 (이유가 있는 결측) | 비워 둠. 0으로 채우지 않음 | {n_nopm} |")
-    w("\n빈 값은 트리 모델(랜덤포레스트 · 그래디언트부스팅)이 그대로 학습한다. 빈 값을 다루지 못하는 로지스틱회귀만 "
-      "모델 안에서 학습 데이터 중앙값으로 채운다(검증 · 시험 값은 쓰지 않음). 직전 정비 없는 기록은 학습 데이터(2023-01~03)에만 있고 "
-      "시험 · 이번 달에는 없다.\n")
-    w("| availability_rate ≤ 0.3 | 정비 뒤 고장이 반영된 값(재고장률 100%) | 컬럼 자체를 제외 | - |")
-    w("\n**삭제한 행은 없다.** 이상치는 값만 고치고 표시 컬럼으로 남겨 추적할 수 있게 했다.\n")
     tr_all = df[df.split == "train"]
     cnt = df.groupby("equipment_id").size()
+    u = unc.set_index("항목")
+    u_best = u.loc[f"{best_name} PR-AUC 95% 구간 (부트스트랩 1000회)"]
+    u_diff = u.loc[f"PR-AUC 차이 ({best_name} - 경과연수순) 95% 구간"]
+    u_seed = u.loc[f"{best_name} PR-AUC 랜덤 시드 0~4"]
+    purge_start = VALID_START - pd.Timedelta(days=PURGE_DAYS)
+    hits_total, ceil_total = best.top20_hits_total, sum(ceiling.values())
+
+    w("# 드론 예측정비 분석 보고서\n")
+    w("> 모든 숫자는 `drone_pm.py` 실행 결과이며, 괄호 안에 출처 파일을 적었다. 교육용 가상 데이터. "
+      "재점검 계획은 별도 문서 `outputs/recheck_plan_2026_01.md`.\n")
+
+    # ── 요약 ────────────────────────────────────────────────
+    w("## 요약\n")
+    w(f"- **목적**: 정비를 마친 드론 중 30일 안에 다시 고장 날 드론을 골라 2026-01 재점검 {K}대를 정한다.")
+    w(f"- **모델**: {best_name}. 검증(2024-07~12) PR-AUC **{best.PR_AUC:.3f}** "
+      f"(95% 구간 {u_best.하한:.3f}~{u_best.상한:.3f}), 경과연수순 {age.PR_AUC:.3f} · 무작위 {rnd.PR_AUC:.3f}.")
+    w(f"- **월 {K}대 적중**: 6개월 합 **{hits_total:g}건** / 가능한 최대 {ceil_total}건 "
+      f"(경과연수순 {age.top20_hits_total:g}건, 무작위 {rnd.top20_hits_total:g}건).")
+    w(f"- **위험 표시 기준**: 확률 **{b300.threshold:.2f}** 이상 (놓침 600만원이면 {b600.threshold:.2f}).")
+    w(f"- **주의**: 반복 고장 드론({', '.join(REPEAT_DRONES)})을 빼면 PR-AUC가 {best.PR_AUC_excl_repeat:.3f}로 내려간다. "
+      "그래도 기준선보다 높다.\n")
+
+    w("## 용어\n")
+    w("| 용어 | 뜻 |\n|---|---|")
+    w(f"| 재고장 | 정비 뒤 30일 안에 사후 · 긴급정비가 있었음 (`{TARGET}` = 1) |")
+    w("| PR-AUC | 확률이 높은 순으로 골랐을 때 실제 재고장을 얼마나 앞쪽에 모았는지 (0~1). 아무렇게나 고르면 재고장 비율과 같다 |")
+    w(f"| 월 {K}대 적중 | 매달 드론별 최근 정비 기록을 확률 순으로 {K}대 골랐을 때 실제 재고장한 드론 수 |")
+    w("| 기준선 | 모델 없이 고르는 방법(무작위, 경과연수 오래된 순). 모델은 이보다 나아야 의미가 있다 |")
+    w("| %p | 확률의 차이(퍼센트포인트). 0.30 → 0.40이면 +10%p |\n")
+
+    # ── 1. 데이터 살펴보기 ──────────────────────────────────
+    w("## 1. 데이터 살펴보기 (outputs/eda_summary.txt)\n")
+    w("| 파일 | 기간 | 건수 | 드론 | 정답 |\n|---|---|---|---|---|")
+    for s, name in (("train", "drone_train.csv"), ("test", "drone_test.csv"), ("this_month", "drone_this_month.csv")):
+        g = df[df.split == s]
+        period = (f"{g.maintenance_date.min():%Y-%m}" if g.maintenance_date.min().to_period("M") == g.maintenance_date.max().to_period("M")
+                  else f"{g.maintenance_date.min():%Y-%m} ~ {g.maintenance_date.max():%Y-%m}")
+        w(f"| {name} | {period} | {len(g):,} | "
+          f"{g.equipment_id.nunique()} | {'있음' if s == 'train' else '없음'} |")
+    w(f"\n학습 데이터 재고장률 **{tr_all[TARGET].mean():.1%}** ({int(tr_all[TARGET].sum()):,}/{len(tr_all):,}건).\n")
+    w("**수치 컬럼 분포 (학습 데이터, 2장 처리 후)**\n")
+    w("| 컬럼 | 최솟값 | 중앙값 | 99% | 최댓값 | 빈 값 |\n|---|---|---|---|---|---|")
+    for c in ["equipment_age_years", "cumulative_operating_hours", "days_since_last_maintenance", "severity",
+              "downtime_hours", "repair_duration_hours", "parts_replaced_count", "maintenance_cost", "availability_rate"]:
+        x = tr_all[c]
+        w(f"| {FEATURE_KO.get(c, '그 달 가동률')} (`{c}`) | {x.min():g} | {x.median():g} | {x.quantile(.99):.4g} | "
+          f"{x.max():g} | {int(x.isna().sum())} |")
+    w("")
+    w("**재고장률 패턴 (학습 데이터)**\n")
+    season = tr_all.maintenance_date.dt.month.map({12: "겨울", 1: "겨울", 2: "겨울", 3: "봄", 4: "봄", 5: "봄",
+                                                   6: "여름", 7: "여름", 8: "여름", 9: "가을", 10: "가을", 11: "가을"})
+    groups = [("정비 구분", tr_all.maintenance_type), ("드론 유형", tr_all.equipment_type),
+              ("고장 유형", tr_all.fault_category), ("계절", season)]
+    w("| 구분 | 값별 재고장률 (건수) |\n|---|---|")
+    for label, key in groups:
+        r = tr_all.groupby(key)[TARGET].agg(["mean", "size"]).sort_values("mean", ascending=False)
+        w(f"| {label} | " + " · ".join(f"{k} {v['mean']:.0%} ({int(v['size'])})" for k, v in r.iterrows()) + " |")
+    mt = tr_all.groupby("maintenance_type")[TARGET].mean()
+    sr = tr_all.groupby(season)[TARGET].mean()
+    w(f"\n- 고장정비(긴급 {mt['긴급정비']:.0%} · 사후 {mt['사후정비']:.0%}) 뒤의 재고장률이 예방정비({mt['예방정비']:.0%})보다 "
+      "훨씬 높다 → 이번 정비 구분과 최근 고장 이력이 핵심 신호.")
+    w(f"- 계절은 {sr.idxmax()}({sr.max():.0%})이 가장 높고 {sr.idxmin()}({sr.min():.0%})이 가장 낮다 → 월(계절) 피처를 넣었다.")
+    w(f"- 드론 유형별 차이도 있어(최고 {tr_all.groupby('equipment_type')[TARGET].mean().idxmax()}) 유형을 피처로 넣었다.\n")
+    w("**결측 · 이상치 · 눈여겨볼 점**\n")
+    fault_na = {s: int((df[df.split == s].fault_code == "없음").sum()) for s in ("train", "test", "this_month")}
+    w(f"- 고장 코드 · 유형 결측(학습 {fault_na['train']:,} / 시험 {fault_na['test']:,} / 이번 달 {fault_na['this_month']})은 "
+      "모두 예방정비 → 고장이 없어 원래 값이 없는 것.")
+    first = df[df.is_first_maintenance == 1]
+    w(f"- 직전 정비 뒤 경과일 결측 {len(first)}건은 모두 드론별 첫 기록({first.maintenance_date.min():%Y-%m}~"
+      f"{first.maintenance_date.max():%Y-%m}, 학습 데이터에만 있음) → 직전 정비가 없어 원래 값이 없는 것.")
+    w(f"- 운용중단 시간 999 {int(df.downtime_missing.sum())}건, 정비 비용 1만 이상 · 100의 배수 {int(df.cost_fixed.sum())}건 → 2장.")
+    low = tr_all.availability_rate <= 0.3
+    w(f"- 가동률 0.3 이하 {int(low.sum())}건의 재고장률 {tr_all.loc[low, TARGET].mean():.0%} (그 외 "
+      f"{tr_all.loc[~low, TARGET].mean():.0%}) → 정비 뒤 정보가 섞인 값(4장).")
     for e in REPEAT_DRONES:
         g = tr_all[tr_all.equipment_id == e]
-        w(f"**반복 고장 드론 {e}**: 기록 {cnt[e]}건(드론 중앙값 {cnt.median():.0f}건), 정비 간격 중앙값 "
-          f"{g.days_since_last_maintenance.median():.0f}일, 학습 재고장률 {g[TARGET].mean():.0%}(전체 {tr_all[TARGET].mean():.0%}). "
-          "날짜·비행시간이 일관되어 입력 오류가 아닌 실제 반복 고장 기체로 판단해 지우지 않았다.\n")
-    w("## 2. 넣지 않은 컬럼과 이유\n")
+        w(f"- 반복 고장 드론 **{e}**: 기록 {cnt[e]}건(드론 중앙값 {cnt.median():.0f}건), 정비 간격 중앙값 "
+          f"{g.days_since_last_maintenance.median():.0f}일, 학습 재고장률 {g[TARGET].mean():.0%}. 날짜 · 비행시간이 일관되어 "
+          "입력 오류가 아닌 실제 반복 고장 기체로 판단해 지우지 않았다.")
+    tr_max = tr_all.equipment_age_years.max()
+    w(f"- 경과연수 중앙값: 학습 {tr_all.equipment_age_years.median():.1f}년 → 시험 "
+      f"{df[df.split == 'test'].equipment_age_years.median():.1f}년 → 이번 달 "
+      f"{df[df.split == 'this_month'].equipment_age_years.median():.1f}년. 드론이 점점 오래되고 있다(모델의 한계 참고).\n")
+
+    # ── 2. 데이터 처리 ──────────────────────────────────────
+    w("## 2. 데이터 처리 기준과 근거 (outputs/cleaning_log.csv)\n")
+    w("| 대상 | 판단 | 처리 | 하지 않은 것 | 건수 |\n|---|---|---|---|---|")
+    n = cl.groupby("column").size().to_dict()
+    normal = df[df.cost_fixed == 0]
+    fixed = df[df.cost_fixed == 1]
+    big_raw = cl[cl.column == "maintenance_cost"].before
+    w(f"| downtime_hours = 999 | 결측 코드 (그 외 최댓값 {df.downtime_hours.max():g}시간) | 비워 두고 `downtime_missing = 1` "
+      f"| 다른 행 값으로 추정해 채우지 않음 | {n.get('downtime_hours', 0)} |")
+    w(f"| maintenance_cost ≥ 10,000 · 100의 배수 | 100배 단위 오입력. 정상 최댓값 {int(normal.maintenance_cost.max())}과 "
+      f"{int(big_raw.min()):,} 사이에 값 없음. 정상값 중 100의 배수는 "
+      f"{sorted(normal.loc[normal.maintenance_cost % 100 == 0, 'maintenance_cost'].astype(int).unique().tolist())}뿐 "
+      f"| ÷100 → {int(fixed.maintenance_cost.min())}~{int(fixed.maintenance_cost.max())} (사후정비 정상 범위), `cost_fixed = 1` "
+      f"| 행 삭제 | {n.get('maintenance_cost', 0)} |")
+    w(f"| fault_code · fault_category 결측 | 예방정비라 원래 값 없음 | '없음' 범주 | — | "
+      f"{fault_na['train'] + fault_na['test'] + fault_na['this_month']:,} |")
+    med = tr_all.days_since_last_maintenance.median()
+    w(f"| 직전 정비 뒤 경과일 · 최근 하루 비행시간 결측 | 드론별 첫 기록, 직전 정비 없음 (이유가 있는 결측) "
+      f"| 비워 두고 `is_first_maintenance = 1` | 0('방금 정비함'), 중앙값('{med:.0f}일 전 정비')으로 채우지 않음 | {len(first)} |")
+    w(f"| 예방정비 뒤 경과일 · 비행시간 결측 | 예방정비 이력 없음 (이유가 있는 결측) | 비워 둠 | 0으로 채우지 않음 "
+      f"| {int(df.days_since_last_pm.isna().sum())} |")
+    w(f"| availability_rate | 정비 뒤 그 달 정보가 섞임 (0.3 이하 재고장률 {tr_all.loc[low, TARGET].mean():.0%}) "
+      "| 컬럼 제외 (4장) | — | 전체 |")
+    w("\n- **삭제한 행은 없다.** 고친 값은 표시 컬럼으로 남겨 추적할 수 있다.")
+    w("- 빈 값은 트리 모델(랜덤포레스트 · 그래디언트부스팅)이 그대로 학습한다. 빈 값을 다루지 못하는 로지스틱회귀만 "
+      "모델 안에서 학습 데이터 중앙값으로 채운다(검증 · 시험 값은 쓰지 않음).\n")
+
+    # ── 3. 피처 ─────────────────────────────────────────────
+    w("## 3. 피처 만들기\n")
+    w("학습 → 시험 → 이번 달 기록을 드론별로 이어 붙여, **그 정비일까지의 기록만으로** 계산했다. "
+      "그 뒤 기록을 지우고 다시 계산해도 같은 값인지 `reports/verify_results.py`(V4)로 확인했다.\n")
+    w("| 피처 | 뜻 | 왜 |\n|---|---|---|")
+    for c, desc, why in FEATURE_DOC:
+        name = "정비 월(계절) (`month_sin`, `month_cos`)" if c == "month_sin" else f"{FEATURE_KO.get(c, c)} (`{c}`)"
+        w(f"| {name} | {desc} | {why} |")
+    w(f"\n원본 컬럼과 표시 컬럼을 합쳐 모두 {len(FEATURES)}개 (범주 {len(CAT_FEATURES)}, 수치 {len(NUM_FEATURES)}).\n")
+
+    # ── 4. 컬럼 선택 ────────────────────────────────────────
+    w("## 4. 쓸 컬럼 고르기\n")
+    w("**넣은 원본 컬럼**: 드론 유형 · 부대 · 경과연수 · 누적 비행시간 · 직전 정비 뒤 경과일, 그리고 이번 정비의 구분 · 고장 유형 · "
+      "심각도 · 운용중단 시간 · 수리 시간 · 교체 부품 수 · 비용 · 성공 여부. 모두 **정비를 마친 직후 정비 기록에 적혀 있는 값**이라 "
+      "예측 시점에 알 수 있다.\n")
+    w("**넣지 않은 컬럼**\n")
     w("| 컬럼 | 이유 |\n|---|---|")
     for k, v in EXCLUDED.items():
         w(f"| {k} | {v} |")
-    w(f"\n사용 피처 {len(FEATURES)}개: 범주 {CAT_FEATURES}, 수치 {len(NUM_FEATURES)}개(과거 이력 피처 포함). "
-      "이력 피처는 train → test → this_month 기록을 드론별로 이어 붙여 그 정비일까지의 기록만으로 계산했다.\n")
-    w("## 3. 기간 분할과 성능 (outputs/validation_metrics.csv, outputs/validation_monthly_hits.csv)\n")
-    w(f"- 학습: {fit.maintenance_date.min():%Y-%m-%d} ~ {fit.maintenance_date.max():%Y-%m-%d} ({len(fit)}건)")
-    w(f"- 검증: {val.maintenance_date.min():%Y-%m-%d} ~ {val.maintenance_date.max():%Y-%m-%d} ({len(val)}건, 재고장 {int(val[TARGET].sum())}건)")
-    w(f"- 2024-06의 {PURGE_DAYS}일은 정답 창(30일)이 검증 기간과 겹쳐 학습에서 뺐다.")
-    w("- 월 20대 적중: 매달 드론별 최근 기록 기준 확률 상위 20대 중 실제 재고장 수(6개월 합).\n")
-    w("| 모델 | PR-AUC | ROC-AUC | 월 20대 적중 합 |\n|---|---|---|---|")
-    for _, r in metrics.iterrows():
-        w(f"| {r.model} | {r.PR_AUC:.3f} | {r.ROC_AUC:.3f} | {r.top20_hits_total:g} |")
-    w(f"\n선택 모델: **{best_name}** (검증 PR-AUC 최고). 무작위 대비 PR-AUC {best.PR_AUC / rnd.PR_AUC:.1f}배, "
-      f"경과연수순 대비 적중 {best.top20_hits_total - age.top20_hits_total:+g}건.\n")
-    if REPEAT_DRONES:
-        w(f"반복 고장 드론({', '.join(REPEAT_DRONES)})을 빼고 계산한 PR-AUC: 선택 모델 {best.PR_AUC_excl_repeat:.3f}"
-          f"(전체 {best.PR_AUC:.3f}), 경과연수순 {age.PR_AUC_excl_repeat:.3f}, 무작위 {rnd.PR_AUC_excl_repeat:.3f}. "
-          "이 드론을 빼도 기준선과의 차이는 유지된다. 월 20대 적중은 드론당 1건으로 세므로 영향이 작다.\n")
-    w(f"월별 적중(선택 모델 / 경과연수순):\n\n| 월 | {best_name} | 경과연수순 |\n|---|---|---|")
-    for ym, r in mh.iterrows():
-        w(f"| {ym} | {r[best_name]:g} | {r['기준선_경과연수순']:g} |")
     w("")
-    w("## 4. 위험 표시 기준 (outputs/threshold_costs.csv, 검증 기간에서만 결정)\n")
-    w("비용 = 놓친 재고장 수 × 놓침 비용 + 기준 이상 건수 × 60만원\n")
-    w("| 놓침 비용 | 기준 확률 | 표시 건수 | 잡은 재고장 | 놓친 재고장 | 총비용(만원) |\n|---|---|---|---|---|---|")
+
+    # ── 5. 기간 분할과 성능 ─────────────────────────────────
+    w("## 5. 기간 분할과 성능 (outputs/validation_metrics.csv, validation_monthly_hits.csv, validation_uncertainty.csv)\n")
+    w("| 구간 | 기간 | 건수 | 용도 |\n|---|---|---|---|")
+    w(f"| 학습 | {fit.maintenance_date.min():%Y-%m-%d} ~ {fit.maintenance_date.max():%Y-%m-%d} | {len(fit):,} | 모델 학습 |")
+    w(f"| 제외 | {purge_start:%Y-%m-%d} ~ {VALID_START - pd.Timedelta(days=1):%Y-%m-%d} "
+      f"| {len(train) - len(fit) - len(val)} | 정답 창({PURGE_DAYS}일)이 검증 기간과 겹쳐 뺌 |")
+    w(f"| 검증 | {val.maintenance_date.min():%Y-%m-%d} ~ {val.maintenance_date.max():%Y-%m-%d} | {len(val):,} "
+      f"(재고장 {int(val[TARGET].sum())}) | 모델 선택 · 위험 기준 결정 |")
+    w(f"| 시험 | 2025-01 ~ 2025-12 | {len(sub):,} | 채점용. 기준 결정에 쓰지 않음 |\n")
+    w("무작위로 나누지 않고 기간으로 나눴다. 최종 모델은 학습 데이터 전체(2023-01~2024-12)로 다시 학습했다.\n")
+    w("| 모델 | PR-AUC | ROC-AUC | 월 20대 적중 합 | PR-AUC (반복 고장 드론 제외) |\n|---|---|---|---|---|")
+    for _, r in metrics.iterrows():
+        w(f"| {r.model} | {r.PR_AUC:.3f} | {r.ROC_AUC:.3f} | {r.top20_hits_total:g} | {r.PR_AUC_excl_repeat:.3f} |")
+    w(f"\n- 선택 모델: **{best_name}** (검증 PR-AUC 최고). 무작위 대비 PR-AUC {best.PR_AUC / rnd.PR_AUC:.1f}배, "
+      f"경과연수순 대비 적중 {best.top20_hits_total - age.top20_hits_total:+.1f}건.")
+    w(f"- **불확실성**: 검증 표본을 다시 뽑으면 PR-AUC 95% 구간 {u_best.하한:.3f}~{u_best.상한:.3f}. "
+      f"경과연수순과의 차이도 95% 구간({u_diff.하한:.3f}~{u_diff.상한:.3f})이 0보다 확실히 크다. "
+      f"랜덤 시드만 바꾸면 {u_seed.하한:.4f}~{u_seed.상한:.4f}(폭 {u_seed.표준오차_또는_폭:.4f}) 흔들린다.")
+    w(f"- **반복 고장 드론**({', '.join(REPEAT_DRONES)})은 재고장이 너무 잦아 맞히기 쉽다. 빼면 PR-AUC가 "
+      f"{best.PR_AUC_excl_repeat:.3f}로 내려가지만 경과연수순({age.PR_AUC_excl_repeat:.3f}) · 무작위"
+      f"({rnd.PR_AUC_excl_repeat:.3f})보다 높다. 월 20대 적중은 드론당 1건으로 세므로 영향이 작다.")
+    w("- 정확도는 재고장이 적은 데이터에서 착시가 커서 쓰지 않았다.")
+    w("- 모델 설정값(나무 수, 깊이 등)은 미리 정한 보수적인 값으로 고정했고 검증 점수로 고르지 않았다. "
+      "검증 기간을 모델 선택 · 위험 기준에 이미 쓰고 있어, 설정값까지 맞추면 검증 성능이 더 부풀기 때문이다.\n")
+    w(f"**월별 {K}대 적중**\n\n| 월 | {best_name} | 경과연수순 | 가능한 최대 |\n|---|---|---|---|")
+    for ym in mh.index:
+        w(f"| {ym} | {mh.at[ym, best_name]:g} | {mh.at[ym, '기준선_경과연수순']:.1f} | {ceiling[ym]} |")
+    w(f"| **합** | **{hits_total:g}** | {age.top20_hits_total:.1f} | {ceil_total} |")
+    w(f"\n가능한 최대 = 그 달 실제로 재고장한 드론 수(최대 {K}). 경과연수순은 같은 연수가 많아 동점을 무작위로 200번 깨서 "
+      "평균을 냈기 때문에 소수가 나온다.\n")
+
+    # ── 6. 위험 표시 기준 ───────────────────────────────────
+    w("## 6. 위험 표시 기준 (outputs/threshold_costs.csv, 검증 기간에서만 결정)\n")
+    w(f"비용 = 놓친 재고장 수 × 놓침 비용 + 기준 이상 건수 × {COST_CHECK}만원. 확률 0.01~0.99를 0.01 간격으로 모두 계산해 "
+      "가장 싼 기준을 골랐다.\n")
+    w("| 놓침 비용 | 기준 확률 | 표시 건수 | 잡은 재고장 | 놓친 재고장 | 총비용(만원) | 이론값 |\n|---|---|---|---|---|---|---|")
     for c, b in ((COST_MISS, b300), (COST_MISS_ALT, b600)):
-        w(f"| {c}만원 | {b.threshold:.2f} | {b.flagged} | {b.caught} | {b.missed} | {b.cost:,} |")
-    w(f"\n참고: 아무것도 점검하지 않으면 {no_model_cost[COST_MISS]:,}만원(300) / {no_model_cost[COST_MISS_ALT]:,}만원(600), "
-      f"전부 점검하면 {all_check_cost:,}만원. 놓침 비용이 커지면 기준이 "
-      f"{'낮아져' if b600.threshold < b300.threshold else '그대로거나 높아져'} 더 많이 점검하는 쪽이 유리해진다.\n")
-    w("## 5. 시험 기간 예측 (outputs/test_predictions_2025.csv)\n")
-    w(f"- 최종 모델은 학습 데이터 전체(2023-01~2024-12)로 다시 학습. 시험 {len(sub)}건 모두 예측.")
-    w(f"- 확률 평균 {sub.prob.mean():.3f}, 기준({b300.threshold:.2f}) 이상 {int((sub.prob >= b300.threshold).sum())}건.\n")
+        w(f"| {c}만원 | {b.threshold:.2f} | {b.flagged} | {b.caught} | {b.missed} | {b.cost:,} | {COST_CHECK / c:.2f} |")
+    w(f"\n- **이론값**: 확률이 정확하다면 '점검비 < 확률 × 놓침 비용'일 때 점검하는 게 이득이므로 기준은 "
+      f"점검비 ÷ 놓침 비용 = {COST_CHECK}/{COST_MISS} = {COST_CHECK / COST_MISS:.2f}, {COST_CHECK}/{COST_MISS_ALT} = "
+      f"{COST_CHECK / COST_MISS_ALT:.2f}이다. 실제로 고른 기준({b300.threshold:.2f} · {b600.threshold:.2f})은 이론값과 가까워, "
+      "모델의 확률이 크게 치우치지 않았다는 근거도 된다.")
+    w(f"- 놓침 비용이 {COST_MISS} → {COST_MISS_ALT}만원으로 커지면 기준이 {b300.threshold:.2f} → {b600.threshold:.2f}로 낮아져 "
+      f"더 많이 점검한다 (표시 {b300.flagged} → {b600.flagged}건).")
+    w(f"- 참고: 아무것도 점검하지 않으면 {no_model_cost[COST_MISS]:,}만원({COST_MISS}) / {no_model_cost[COST_MISS_ALT]:,}만원"
+      f"({COST_MISS_ALT}), 전부 점검하면 {all_check_cost:,}만원.\n")
+
+    # ── 7. 시험 예측 ────────────────────────────────────────
+    w("## 7. 시험 기간 예측 (outputs/test_predictions_2025.csv)\n")
+    w(f"- 학습 데이터 전체로 다시 학습한 최종 모델({best_name})로 시험 {len(sub):,}건 모두 예측.")
+    w(f"- 확률 평균 {sub.prob.mean():.3f} (검증 기간 재고장률 {val[TARGET].mean():.3f}), "
+      f"기준({b300.threshold:.2f}) 이상 {int((sub.prob >= b300.threshold).sum())}건.")
+    w("- 결과 검증: `reports/verify_results.py`, `reports/verify_notebook.ipynb` (결과 재현 · 누수 · 숫자 대조).\n")
     w("---\n2026-01 드론 재점검 계획과 모델의 한계는 별도 문서 `outputs/recheck_plan_2026_01.md`에 있다.")
     report_lines, L = L, []          # 여기부터는 재점검 계획 문서
     w = L.append
@@ -652,19 +844,29 @@ def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model
     for _, r in plan.iterrows():
         w(f"| {r['순위']} | {r['드론']} | {r['유형']} | {r['부대']} | {r['확률']:.3f} | {r['위험을 올린 요인']} | {r['권고']} |")
     w("\n위험을 올린 요인: 해당 값을 학습 데이터의 보통 값(중앙값·최빈값)으로 바꿨을 때 확률이 얼마나 내려가는지(%p).\n")
+    exp_fail = plan["확률"].sum()
+    w(f"**기대 효과**: 20대의 확률 합은 {exp_fail:.1f}로, 그대로 두면 약 {exp_fail:.0f}대가 30일 안에 다시 고장 날 것으로 "
+      f"예상된다. 재점검으로 이를 막는다면 놓침 비용 약 {exp_fail * COST_MISS:,.0f}만원을 줄이고 점검비 "
+      f"{K * COST_CHECK:,}만원이 든다 (README 비용 가정, 확률이 정확하다고 볼 때의 기대값).\n")
     if len(latest) > K:
         a, b = latest.iloc[K - 1], latest.iloc[K]
         gap = a.prob - b.prob
         if gap < BOUNDARY_GAP:
             w(f"**20위 경계 주의**: {K}위 {a.equipment_id}({a.equipment_type}, {a.unit_code}) 확률 {a.prob:.4f}, "
               f"{K + 1}위 {b.equipment_id}({b.equipment_type}, {b.unit_code}, 이번 정비 {b.maintenance_type}) 확률 {b.prob:.4f}. "
-              f"차이 {gap:.4f}는 랜덤 시드만 바꿔도 생기는 변동보다 작다. 경계의 순위는 사실상 같으므로 "
-              "정비 담당자가 현장 상태를 보고 바꿀 수 있다. (출처: outputs/this_month_predictions.csv)\n")
+              f"차이 {gap:.4f}는 매우 작아(검증 PR-AUC도 랜덤 시드만 바꾸면 {u_seed.표준오차_또는_폭:.4f} 흔들림) "
+              "경계의 순위는 사실상 같다. 정비 담당자가 현장 상태를 보고 바꿀 수 있다. "
+              "(출처: outputs/this_month_predictions.csv, validation_uncertainty.csv)\n")
     if len(overflow):
         w(f"**20대를 넘는 기준 이상 드론 {len(overflow)}대**: "
           + ", ".join(f"{r.equipment_id}({r.prob:.2f})" for r in overflow.itertuples())
-          + "\n- 처리 방안: 다음 달 초 우선 점검 대상으로 넘기고, 그때까지 비행 전 점검 강화·고위험 임무 배제, "
-            "같은 부대 정비반 협조 가능 시 추가 점검.\n")
+          + "\n\n처리 방안\n"
+            "1. 다음 달 초 우선 점검 대상으로 넘긴다 (확률 순).\n"
+            "2. 그때까지 비행 전 점검을 강화하고 고위험 임무에서 뺀다.\n"
+            "3. 같은 부대 정비반 협조가 가능하면 추가 점검한다. 부대별 초과 대수: "
+          + ", ".join(f"{u} {c}대" for u, c in overflow.unit_code.value_counts().items()) + "\n"
+          + f"4. 놓침 비용을 {COST_MISS_ALT}만원으로 본다면 기준 이상이 {over600}대로 늘어나므로, "
+            "점검 여력 확대를 검토한다.\n")
     else:
         w("기준 이상 드론이 20대 이하이므로 모두 이번 달에 재점검한다.\n")
     w("## 2. 모델의 한계\n")

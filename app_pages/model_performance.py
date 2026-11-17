@@ -3,8 +3,10 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from app_utils import C_BASE, C_COMPARE, C_MAIN, best_model, require_output
-from drone_pm import PURGE_DAYS, VALID_START
+from app_utils import C_BASE, C_COMPARE, C_MAIN, best_model, read_data, require_output
+from drone_pm import PURGE_DAYS, VALID_START, repeat_failure_drones
+
+REPEAT = ", ".join(repeat_failure_drones(read_data("drone_train.csv")))
 
 st.title("모델 성능")
 st.caption("README [5] · outputs/validation_metrics.csv, outputs/validation_monthly_hits.csv")
@@ -59,7 +61,7 @@ st.dataframe(metrics.rename(columns={"model": "모델", "PR_AUC": "PR-AUC", "ROC
                                      "PR_AUC_excl_repeat": "PR-AUC (반복 고장 드론 제외)"}),
              hide_index=True, width="stretch")
 if "PR_AUC_excl_repeat" in metrics:
-    st.info(f"**반복 고장 드론(DR-0034, DR-0115)을 빼면** 선택 모델 PR-AUC가 {best.PR_AUC:.3f} → "
+    st.info(f"**반복 고장 드론({REPEAT})을 빼면** 선택 모델 PR-AUC가 {best.PR_AUC:.3f} → "
             f"**{best.PR_AUC_excl_repeat:.3f}**로 내려갑니다. 이 두 드론은 재고장이 너무 잦아 맞히기 쉽기 때문입니다. "
             f"그래도 경과연수순({age.PR_AUC_excl_repeat:.3f}) · 무작위({rand.PR_AUC_excl_repeat:.3f})보다 높습니다. "
             "월 20대 적중은 드론당 1건으로 세므로 영향이 작습니다.")
