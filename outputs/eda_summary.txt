@@ -1,0 +1,80 @@
+====================================================================== 
+[1] 데이터 살펴보기
+======================================================================
+train: 2346행, 드론 150대, 2023-01-01 ~ 2024-12-31
+test: 1241행, 드론 150대, 2025-01-01 ~ 2025-12-31
+this_month: 106행, 드론 81대, 2026-01-01 ~ 2026-01-31
+
+결측 수(파일별):
+  train: {'fault_code': 1707, 'fault_category': 1707, 'days_since_last_maintenance': 150}
+  test: {'fault_code': 876, 'fault_category': 876}
+  this_month: {'fault_code': 62, 'fault_category': 62, 'availability_rate': 106}
+  ※ this_month 파일에는 availability_rate 컬럼 자체가 없음
+
+학습 데이터 재고장률: 0.224 (525/2346)
+fault_category 결측 행의 정비 구분: {'예방정비': 1707}  -> 예방정비에는 고장이 없어 '원래 값 없음'
+days_since_last_maintenance 결측 150건 / 드론별 첫 기록 150건, 그중 결측 150건 -> 직전 정비가 없어 '원래 값 없음'
+
+수치 컬럼 분포(학습):
+                              count     mean     std    min     1%      50%      99%      max
+equipment_age_years          2346.0     4.35    1.63    0.6    1.0     4.40     7.60      7.9
+severity                     2346.0     0.79    1.45    0.0    0.0     0.00     5.00      5.0
+downtime_hours               2346.0     8.10   41.79    0.5    0.5     3.50    40.28    999.0
+repair_duration_hours        2346.0     3.64    4.89    0.2    0.3     2.00    23.57     55.9
+parts_replaced_count         2346.0     0.86    1.43    0.0    0.0     0.00     6.00     10.0
+maintenance_cost             2346.0    93.20  791.12    8.0    8.0    23.00   386.00  19000.0
+cumulative_operating_hours   2346.0  1400.03  616.25  140.3  257.3  1363.40  2905.11   3542.6
+days_since_last_maintenance  2196.0    44.80   25.13    1.0    1.0    51.00    90.00     94.0
+availability_rate            2346.0     0.92    0.12    0.3    0.3     0.96     0.99      1.0
+
+이상치 후보:
+  downtime_hours == 999: {'test': 0, 'this_month': 0, 'train': 4}  (그 외 최댓값 74.0)
+  maintenance_cost > 2000: {'test': 0, 'this_month': 0, 'train': 5}, 값 [15000, 16200, 16800, 18300, 19000]  (그 외 최댓값 611)
+  availability_rate <= 0.3: 31건, 이들의 재고장률 1.00 (그 외 0.21) -> 정비 뒤 그 달의 고장이 반영된 값(누수)
+
+일관성: 날짜 차이와 days_since_last 불일치 0건, 누적비행시간 감소 0건, 동일 드론-날짜 중복 0건
+
+패턴(학습, 재고장률):
+  [maintenance_type]
+                   mean  size
+maintenance_type             
+긴급정비              0.643   171
+사후정비              0.472   468
+예방정비              0.114  1707
+  [equipment_type]
+                 mean  size
+equipment_type             
+감시드론            0.203   581
+교육용드론           0.136   381
+수송드론            0.318   601
+정찰드론            0.209   783
+  [fault_category]
+                 mean  size
+fault_category             
+기체              0.532    79
+모터              0.605   147
+배터리             0.539   180
+센서              0.421   107
+없음              0.114  1707
+통신              0.460   126
+  [계절]
+                   mean  size
+maintenance_date             
+가을                0.237   596
+겨울                0.258   593
+봄                 0.156   557
+여름                0.240   600
+  [계절 x 고장유형: 고장 건수]
+fault_category    기체  모터  배터리  센서  통신
+maintenance_date                     
+가을                20  36   48  30  34
+겨울                22  38   76  27  24
+봄                 16  23   20  21  26
+여름                21  50   36  29  42
+  [드론유형 x 고장유형: 고장 건수]
+fault_category  기체  모터  배터리  센서  통신
+equipment_type                     
+감시드론            18  19   44  31  32
+교육용드론           18  12   27  16  16
+수송드론            23  74   50  22  35
+정찰드론            20  42   59  38  43

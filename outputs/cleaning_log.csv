@@ -1,0 +1,10 @@
+﻿split,equipment_id,maintenance_date,column,before,after,reason
+train,DR-0014,2024-10-14,downtime_hours,999.0,37.3,999는 결측 코드. 수리시간 x 정비구분별 중앙비율로 대체
+train,DR-0074,2024-01-27,downtime_hours,999.0,6.3,999는 결측 코드. 수리시간 x 정비구분별 중앙비율로 대체
+train,DR-0115,2024-05-02,downtime_hours,999.0,26.8,999는 결측 코드. 수리시간 x 정비구분별 중앙비율로 대체
+train,DR-0141,2023-06-18,downtime_hours,999.0,15.1,999는 결측 코드. 수리시간 x 정비구분별 중앙비율로 대체
+train,DR-0046,2024-08-09,maintenance_cost,15000.0,150.0,다른 값과 100배 차이. 단위 오입력으로 보고 /100
+train,DR-0054,2023-03-23,maintenance_cost,16800.0,168.0,다른 값과 100배 차이. 단위 오입력으로 보고 /100
+train,DR-0066,2023-12-21,maintenance_cost,16200.0,162.0,다른 값과 100배 차이. 단위 오입력으로 보고 /100
+train,DR-0088,2023-11-03,maintenance_cost,18300.0,183.0,다른 값과 100배 차이. 단위 오입력으로 보고 /100
+train,DR-0115,2023-08-14,maintenance_cost,19000.0,190.0,다른 값과 100배 차이. 단위 오입력으로 보고 /100
