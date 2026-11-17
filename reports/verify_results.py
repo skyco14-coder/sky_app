@@ -282,6 +282,16 @@ def v8_report(thr, over):
               row.group(0) if row else "못 찾음")
     m = re.search(r"이상 \*\*(\d+)대\*\*", rep)
     check("보고서 기준 이상 드론 수", bool(m) and int(m.group(1)) == over, m.group(0) if m else "못 찾음")
+    mp = read(OUT / "this_month_predictions.csv")
+    a, b = mp.iloc[19], mp.iloc[20]
+    m = re.search(r"20위 (DR-\d+).*? 확률 ([\d.]+), 21위 (DR-\d+).*? 확률 ([\d.]+)\. 차이 ([\d.]+)", rep)
+    if a.prob - b.prob < pm.BOUNDARY_GAP:
+        check("보고서 20위 경계 문구가 결과 파일과 같음",
+              bool(m) and m.group(1) == a.equipment_id and m.group(3) == b.equipment_id
+              and abs(float(m.group(2)) - a.prob) < 1e-4 and abs(float(m.group(4)) - b.prob) < 1e-4,
+              m.group(0) if m else "문구 없음")
+    else:
+        check("20위 경계 차이가 커서 문구 없음", m is None, f"차이 {a.prob - b.prob:.4f}")
     plan = read(OUT / "recheck_plan_2026_01.csv")
     check("보고서 재점검 표 20대가 계획 파일과 같음",
           all(f"| {r['순위']} | {r['드론']} |" in rep for _, r in plan.iterrows()))

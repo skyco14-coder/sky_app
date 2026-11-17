@@ -44,6 +44,8 @@ COST_CHECK = 60              # 재점검 1대(만원)
 
 VALID_START = pd.Timestamp("2024-07-01")   # 검증 기간 2024-07 ~ 2024-12
 PURGE_DAYS = 30                             # 학습 정답 창이 검증 기간과 겹치지 않도록 제외
+BOUNDARY_GAP = 0.01                         # 20위·21위 확률 차이가 이보다 작으면 보고서에 경계 주의 문구
+                                            # (랜덤 시드만 바꿔도 검증 PR-AUC가 약 0.004 흔들림)
 
 eda_lines: list[str] = []
 
@@ -640,6 +642,14 @@ def write_report(df, fit, val, metrics, monthly, best_name, b300, b600, no_model
     for _, r in plan.iterrows():
         w(f"| {r['순위']} | {r['드론']} | {r['유형']} | {r['부대']} | {r['확률']:.3f} | {r['위험을 올린 요인']} | {r['권고']} |")
     w("\n위험을 올린 요인: 해당 값을 학습 데이터의 보통 값(중앙값·최빈값)으로 바꿨을 때 확률이 얼마나 내려가는지(%p).\n")
+    if len(latest) > K:
+        a, b = latest.iloc[K - 1], latest.iloc[K]
+        gap = a.prob - b.prob
+        if gap < BOUNDARY_GAP:
+            w(f"**20위 경계 주의**: {K}위 {a.equipment_id}({a.equipment_type}, {a.unit_code}) 확률 {a.prob:.4f}, "
+              f"{K + 1}위 {b.equipment_id}({b.equipment_type}, {b.unit_code}, 이번 정비 {b.maintenance_type}) 확률 {b.prob:.4f}. "
+              f"차이 {gap:.4f}는 랜덤 시드만 바꿔도 생기는 변동보다 작다. 경계의 순위는 사실상 같으므로 "
+              "정비 담당자가 현장 상태를 보고 바꿀 수 있다. (출처: outputs/this_month_predictions.csv)\n")
     if len(overflow):
         w(f"**20대를 넘는 기준 이상 드론 {len(overflow)}대**: "
           + ", ".join(f"{r.equipment_id}({r.prob:.2f})" for r in overflow.itertuples())
